@@ -1,13 +1,10 @@
 from typing import Callable, Tuple
 
 import torch
-from torch import nn
 import torch.nn.functional as F
-
-from pytorchvideo.models.resnet import create_resnet
-
 from huggingface_hub import hf_hub_download
-
+from pytorchvideo.models.resnet import create_resnet
+from torch import nn
 
 repo_id = "jinmang2/test_video_fe"
 model_zoo = {
