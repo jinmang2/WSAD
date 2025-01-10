@@ -1,8 +1,8 @@
+import argparse
 import os
 from typing import Union
 
 import datasets
-import decord
 import numpy as np
 import torch
 from datasets import load_dataset
@@ -10,6 +10,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+import decord
 from src.dataset import TenCropVideoFrameDataset
 from src.i3d import build_i3d_feature_extractor
 
@@ -35,19 +36,7 @@ def load_feature_extraction_model(model_name: str = "i3d_8x8_r50") -> torch.nn.M
     return model, device
 
 
-def main(outdir: str = "/content/drive/MyDrive/ucf_crime"):
-    outpath = os.path.join(outdir, "anomaly_features")
-    anomaly = load_ucf_crime_dataset()
-    model, device = load_feature_extraction_model()
-    extract(anomaly, model, device, outpath)
-
-    seg_length = 32
-    seg_outpath = os.path.join(outdir, f"segment_features_{seg_length}")
-    # Apply segments only for the train dataset
-    segment(os.path.join(outpath, "train"), seg_outpath, seg_length)
-
-
-def extract(
+def extract_features(
     dataset: Union[datasets.Dataset, datasets.DatasetDict],
     model: torch.nn.Module,
     device: torch.device,
@@ -57,7 +46,7 @@ def extract(
         for mode, dset in dataset.items():
             new_outpath = os.path.join(outpath, mode)
 
-            extract(dset, model, device, new_outpath)
+            extract_features(dset, model, device, new_outpath)
 
         return None
 
@@ -69,7 +58,7 @@ def extract(
     if not os.path.exists(outpath):
         os.makedirs(outpath)
 
-    def _extract(video_dataset: torch.utils.data.Dataset) -> torch.Tensor:
+    def _extract_features(video_dataset: torch.utils.data.Dataset) -> torch.Tensor:
         outputs = []
         dataloader = DataLoader(video_dataset, batch_size=16, shuffle=False)
         for _, inputs in enumerate(dataloader):
@@ -136,7 +125,7 @@ def extract(
                         images.append(Image.fromarray(arr))
                     video_dataset = TenCropVideoFrameDataset(images)
                     # inference
-                    outputs = _extract(video_dataset)
+                    outputs = _extract_features(video_dataset)
                     np.save(seg_savepath, outputs)
 
                 segments.append(outputs)
@@ -145,13 +134,13 @@ def extract(
             # read video frames
             video_dataset = TenCropVideoFrameDataset(sample["video_path"])
             # inference
-            outputs = _extract(video_dataset)
+            outputs = _extract_features(video_dataset)
 
         # save
         np.save(savepath, outputs)
 
 
-def segment(feature_path: str, seg_outpath: str, seg_length: int = 32):
+def segment_features(feature_path: str, seg_outpath: str, seg_length: int = 32):
     files = sorted(os.listdir(feature_path))
     for file in tqdm(files):
         if not file.endswith(".npy"):
@@ -161,9 +150,8 @@ def segment(feature_path: str, seg_outpath: str, seg_length: int = 32):
         if os.path.exists(savepath):
             continue
 
-        filepath = os.path.join(feature_path, file)
         # (nclips, 10, 2048) -> (10, nclips, 2048)
-        features = np.load(filepath).transpose(1, 0, 2)
+        features = np.load(os.path.join(feature_path, file)).transpose(1, 0, 2)
 
         divided_features = []
         for f in features:
@@ -180,5 +168,54 @@ def segment(feature_path: str, seg_outpath: str, seg_length: int = 32):
         np.save(savepath, divided_features)
 
 
+def main(args: argparse.Namespace):
+    feat_outpath = os.path.join(args.outdir, "anomaly_features")
+    anomaly = load_ucf_crime_dataset(args.repo_id, args.cache_dir, args.config_name)
+    model, device = load_feature_extraction_model(args.model_name)
+    extract_features(anomaly, model, device, feat_outpath)
+
+    seg_outpath = os.path.join(args.outdir, f"segment_features_{args.seg_length}")
+    # Apply segments only for the train dataset
+    segment_features(os.path.join(feat_outpath, "train"), seg_outpath, args.seg_length)
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Extract video features and segment them."
+    )
+    parser.add_argument(
+        "--repo_id",
+        type=str,
+        default="jinmang2/ucf_crime",
+        help="HuggingFace dataset repository ID.",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default="/content/drive/MyDrive/ucf_crime",
+        help="Cache directory for the dataset.",
+    )
+    parser.add_argument(
+        "--config_name", type=str, default="anomaly", help="Dataset configuration name."
+    )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="i3d_8x8_r50",
+        help="Feature extraction model name.",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=str,
+        default="/content/drive/MyDrive/ucf_crime",
+        help="Output directory for features.",
+    )
+    parser.add_argument(
+        "--seg_length",
+        type=int,
+        default=32,
+        help="Segment length for feature extraction.",
+    )
+
+    args = parser.parse_args()
+    main(args)
