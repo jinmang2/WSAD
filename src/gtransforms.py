@@ -1,8 +1,8 @@
 from abc import abstractmethod
-from PIL import Image
-from typing import Union, List, Tuple
+from typing import List, Tuple, Union
 
 import torch
+from PIL import Image
 from torchvision import transforms
 
 

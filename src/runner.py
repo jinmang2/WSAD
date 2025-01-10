@@ -1,16 +1,13 @@
-from typing import Dict, Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-from omegaconf.dictconfig import DictConfig
-
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.metrics import auc, roc_curve, precision_recall_curve
-
-import torch
-from torch.utils.data import DataLoader
-
-import wandb
 import lightning.pytorch as pl
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import wandb
+from omegaconf.dictconfig import DictConfig
+from sklearn.metrics import auc, precision_recall_curve, roc_curve
+from torch.utils.data import DataLoader
 
 from .dataset import build_feature_dataset
 

@@ -1,8 +1,7 @@
 from typing import Optional
 
-import omegaconf
-
 import hydra
+import omegaconf
 from hydra.utils import _locate, instantiate
 
 

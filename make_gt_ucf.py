@@ -1,11 +1,11 @@
-import os
 import json
+import os
 import zipfile
-import numpy as np
-from tqdm import tqdm
-from datasets import DownloadManager, DownloadConfig
-from huggingface_hub import hf_hub_download, hf_hub_url
 
+import numpy as np
+from datasets import DownloadConfig, DownloadManager
+from huggingface_hub import hf_hub_download, hf_hub_url
+from tqdm import tqdm
 
 temporal_annots_path = hf_hub_download(
     repo_id="jinmang2/ucf_crime",

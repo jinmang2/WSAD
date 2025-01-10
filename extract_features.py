@@ -1,22 +1,17 @@
 import os
 from typing import Union
-from tqdm.auto import tqdm
 
 import datasets
-from datasets import load_dataset
-
-import numpy as np
-
-from PIL import Image
-
-import torch
-from torch.utils.data import DataLoader
-
 import decord
+import numpy as np
+import torch
+from datasets import load_dataset
+from PIL import Image
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
-from src.i3d import build_i3d_feature_extractor
 from src.dataset import TenCropVideoFrameDataset
-
+from src.i3d import build_i3d_feature_extractor
 
 DEFAULT_REPO_ID = "jinmang2/ucf_crime"
 DEFAULT_DATASET_CONF_NAME = "anomaly"

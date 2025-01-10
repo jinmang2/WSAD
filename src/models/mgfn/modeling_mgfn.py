@@ -1,21 +1,14 @@
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
-from torch import nn
-from torch import nn, einsum
 from einops import rearrange
-
-from dataclasses import dataclass
-
+from torch import einsum, nn
 from transformers import PreTrainedModel
 from transformers.file_utils import ModelOutput
 
+from ...loss import MGFNLoss, SparsityLoss, TemporalSmoothnessLoss
 from .configuration_mgfn import MGFNConfig
-from ...loss import (
-    TemporalSmoothnessLoss,
-    SparsityLoss,
-    MGFNLoss,
-)
 
 
 @dataclass

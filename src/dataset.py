@@ -1,21 +1,17 @@
-import os
 import json
+import os
 import zipfile
-from PIL import Image
-from typing import Union, List, Optional, Callable, Dict, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
+import decord
 import numpy as np
-
 import torch
+from huggingface_hub import hf_hub_download
+from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-import decord
-
-from huggingface_hub import hf_hub_download
-
 from . import gtransforms
-
 
 DEFAULT_FEATURE_HUB = "jinmang2/ucf_crime_tencrop_i3d_seg32"
 DEFAULT_FILENAMES = {"train": "train.zip", "test": "test.zip"}
