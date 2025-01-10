@@ -3,4 +3,4 @@ frames_per_clip: 16
 num_workers: 8
 dynamic_load: false
 revision: tushar-n
-cache_dir: /content/drive/MyDrive/ucf_crime/cache/
+cache_dir: null
