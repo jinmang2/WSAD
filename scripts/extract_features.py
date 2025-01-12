@@ -7,90 +7,77 @@ import numpy as np
 import torch
 from datasets import load_dataset
 from PIL import Image
+from src.dataset import TenCropVideoFrameDataset
+from src.i3d import build_i3d_feature_extractor
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import decord
-from src.dataset import TenCropVideoFrameDataset
-from src.i3d import build_i3d_feature_extractor
-
-DEFAULT_REPO_ID = "jinmang2/ucf_crime"
-DEFAULT_DATASET_CONF_NAME = "anomaly"
-DEFAULT_CACHE_DIR = "/content/drive/MyDrive/ucf_crime"
 
 
-def load_ucf_crime_dataset(
-    repo_id: str = DEFAULT_REPO_ID,
-    cache_dir: str = DEFAULT_CACHE_DIR,
-    config_name: str = DEFAULT_DATASET_CONF_NAME,
-) -> datasets.DatasetDict:
-    return load_dataset(repo_id, config_name, cache_dir=cache_dir)
-
-
-def load_feature_extraction_model(model_name: str = "i3d_8x8_r50") -> torch.nn.Module:
+def load_feature_extractor(
+    model_name: str = "i3d_8x8_r50", device: str = "cpu"
+) -> torch.nn.Module:
     model = build_i3d_feature_extractor(model_name=model_name)
     model.eval()
-    if torch.cuda.is_available():
-        model.cuda()
-    device = next(model.parameters()).device
-    return model, device
+    model.to(device)
+    return model
 
 
-def extract_features(
+def _extract_video_features(
+    video_clips_dataset: torch.utils.data.Dataset,
+    model: torch.nn.Module,
+    device: torch.device,
+    batch_size: int = 16,
+) -> np.ndarray:
+    outputs = []
+    dataloader = DataLoader(video_clips_dataset, batch_size=batch_size, shuffle=False)
+    for inputs in dataloader:
+        # Unlike Tushar-N's B which is `n_videos`, our B is `n_clips`.
+        # inputs.shape: (n_clips / bsz, n_crops, clip_len, n_channel, width, height)
+        # (B / bsz, 10, 16, 3, 224, 224) -> (B / bsz, 10, 3, 16, 224, 224)
+        inputs = inputs.permute(0, 1, 3, 2, 4, 5)
+        n_crops = inputs.shape[1]
+        crops = [
+            model(inputs[:, i].to(device)).detach().cpu().numpy()
+            for i in range(n_crops)
+        ]
+        # Combine crops: [(B / bsz, 2048, 1, 1, 1)] * 10 -> (B / bsz, 10, 2048, 1, 1, 1)
+        outputs.append(np.stack(crops, axis=1))
+
+    # vstack: [(B / bsz, 10, 2048, 1, 1, 1)] * bsz -> (B, 10, 2048, 1, 1, 1)
+    outputs = np.squeeze(np.vstack(outputs))  # squeeze: (B, 10, 2048)
+
+    return outputs
+
+
+def extract_features_from_video(
     dataset: Union[datasets.Dataset, datasets.DatasetDict],
     model: torch.nn.Module,
     device: torch.device,
-    outpath: str,
+    output_dir: str,
+    batch_size: int = 16,
 ):
     if isinstance(dataset, datasets.DatasetDict):
         for mode, dset in dataset.items():
-            new_outpath = os.path.join(outpath, mode)
-
-            extract_features(dset, model, device, new_outpath)
-
-        return None
+            subset_outpath = os.path.join(output_dir, mode)
+            extract_features_from_video(dset, model, device, subset_outpath)
+        return
 
     assert isinstance(dataset, datasets.Dataset), (
         "The type of dataset argument must be `datasets.Dataset` or"
         f"`datasets.DatasetDict`. Your input's type is {type(dataset)}."
     )
 
-    if not os.path.exists(outpath):
-        os.makedirs(outpath)
-
-    def _extract_features(video_dataset: torch.utils.data.Dataset) -> torch.Tensor:
-        outputs = []
-        dataloader = DataLoader(video_dataset, batch_size=16, shuffle=False)
-        for _, inputs in enumerate(dataloader):
-            # Unlike Tushar-N's B which is `n_videos`, our B is `n_clips`.
-            # (B, 10, 16, 3, 224, 224) -> (B, 10, 3, 16, 224, 224)
-            inputs = inputs.permute(0, 1, 3, 2, 4, 5)
-            crops = []
-            for crop_idx in range(inputs.shape[1]):
-                crop = inputs[:, crop_idx].to(device)
-                # (B, 3, 16, 224, 224) -> (B, 2048, 1, 1, 1)
-                crop = model(crop)
-                crops.append(crop.detach().cpu().numpy())
-            outputs.append(crops)
-
-        # stack
-        _outputs = []
-        for output in outputs:
-            # [(B, 2048, 1, 1, 1)] * 10 -> (B, 10, 2048, 1, 1, 1)
-            _outputs.append(np.stack(output, axis=1))
-        # [(B, 10, 2048, 1, 1, 1)] * T -> (n_clips, 10, 2048, 1, 1, 1)
-        # T = n_clips / B
-        _outputs = np.vstack(_outputs)
-        outputs = np.squeeze(_outputs)  # (n_clips, 10, 2048)
-
-        return outputs
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     for sample in tqdm(dataset):
         # check existence
-        filename = sample["video_path"].split(os.sep)[-1].split(".")[0]
-        savepath = os.path.join(outpath, filename + "_i3d.npy")
+        file_name = sample["video_path"].split(os.sep)[-1].split(".")[0]
+        save_path = os.path.join(output_dir, file_name + "_i3d.npy")
 
-        if os.path.exists(savepath):
+        if os.path.exists(save_path):
             continue
 
         # If the size of the video is larger than 1GB, divide it by the segment length.
@@ -107,15 +94,15 @@ def extract_features(
             vr = decord.VideoReader(uri=sample["video_path"])
             segments = []
             for seg in tqdm(range(len(vr) // seg_len + 1)):
-                seg_folder = os.path.join(outpath, filename)
+                seg_folder = os.path.join(output_dir, file_name)
 
                 if not os.path.exists(seg_folder):
                     os.makedirs(seg_folder)
 
-                seg_savepath = os.path.join(seg_folder, filename + f"_{seg}.npy")
+                seg_save_path = os.path.join(seg_folder, file_name + f"_{seg}.npy")
 
-                if os.path.exists(seg_savepath):
-                    outputs = np.load(seg_savepath)
+                if os.path.exists(seg_save_path):
+                    outputs = np.load(seg_save_path)
                 else:
                     images = []
                     for i in [seg * seg_len + i for i in range(seg_len)]:
@@ -123,35 +110,39 @@ def extract_features(
                             break
                         arr = vr[i].asnumpy()
                         images.append(Image.fromarray(arr))
-                    video_dataset = TenCropVideoFrameDataset(images)
+                    video_clips_dataset = TenCropVideoFrameDataset(images)
                     # inference
-                    outputs = _extract_features(video_dataset)
-                    np.save(seg_savepath, outputs)
+                    outputs = _extract_video_features(
+                        video_clips_dataset, model, device, batch_size
+                    )
+                    np.save(seg_save_path, outputs)
 
                 segments.append(outputs)
             outputs = np.vstack(segments)
         else:
             # read video frames
-            video_dataset = TenCropVideoFrameDataset(sample["video_path"])
+            video_clips_dataset = TenCropVideoFrameDataset(sample["video_path"])
             # inference
-            outputs = _extract_features(video_dataset)
+            outputs = _extract_video_features(
+                video_clips_dataset, model, device, batch_size
+            )
 
         # save
-        np.save(savepath, outputs)
+        np.save(save_path, outputs)
 
 
-def segment_features(feature_path: str, seg_outpath: str, seg_length: int = 32):
-    files = sorted(os.listdir(feature_path))
+def segment_features(feat_output_dir: str, seg_output_dir: str, seg_length: int = 32):
+    files = sorted(os.listdir(feat_output_dir))
     for file in tqdm(files):
         if not file.endswith(".npy"):
             continue
 
-        savepath = os.path.join(seg_outpath, file)
+        savepath = os.path.join(seg_output_dir, file)
         if os.path.exists(savepath):
             continue
 
         # (nclips, 10, 2048) -> (10, nclips, 2048)
-        features = np.load(os.path.join(feature_path, file)).transpose(1, 0, 2)
+        features = np.load(os.path.join(feat_output_dir, file)).transpose(1, 0, 2)
 
         divided_features = []
         for f in features:
@@ -169,14 +160,21 @@ def segment_features(feature_path: str, seg_outpath: str, seg_length: int = 32):
 
 
 def main(args: argparse.Namespace):
-    feat_outpath = os.path.join(args.outdir, "anomaly_features")
-    anomaly = load_ucf_crime_dataset(args.repo_id, args.cache_dir, args.config_name)
-    model, device = load_feature_extraction_model(args.model_name)
-    extract_features(anomaly, model, device, feat_outpath)
+    feat_output_dir = os.path.join(args.output_dir, "anomaly_features")
+    # anomaly = load_ucf_crime_dataset(args.repo_id, args.cache_dir, args.config_name)
+    ucf_crime_anomaly_dset = load_dataset("jinmang2/ucf_crime", config_name="anomaly")
+    model = load_feature_extractor(args.model_name, args.device)
+    extract_features_from_video(
+        ucf_crime_anomaly_dset, model, args.device, feat_output_dir
+    )
 
-    seg_outpath = os.path.join(args.outdir, f"segment_features_{args.seg_length}")
+    seg_output_dir = os.path.join(
+        args.output_dir, f"segment_features_{args.seg_length}"
+    )
     # Apply segments only for the train dataset
-    segment_features(os.path.join(feat_outpath, "train"), seg_outpath, args.seg_length)
+    segment_features(
+        os.path.join(feat_output_dir, "train"), seg_output_dir, args.seg_length
+    )
 
 
 if __name__ == "__main__":
@@ -192,8 +190,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cache_dir",
         type=str,
-        default="/content/drive/MyDrive/ucf_crime",
+        default=None,
         help="Cache directory for the dataset.",
+    )
+    parser.add_argument(
+        "--device", type=str, default="cuda", help="Device for feature extractor."
     )
     parser.add_argument(
         "--config_name", type=str, default="anomaly", help="Dataset configuration name."
@@ -205,9 +206,9 @@ if __name__ == "__main__":
         help="Feature extraction model name.",
     )
     parser.add_argument(
-        "--outdir",
+        "--output_dir",
         type=str,
-        default="/content/drive/MyDrive/ucf_crime",
+        default="outputs",
         help="Output directory for features.",
     )
     parser.add_argument(
