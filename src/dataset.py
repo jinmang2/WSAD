@@ -1,20 +1,30 @@
+import importlib
 import json
 import os
 import zipfile
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from enum import Enum
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Union
 
-import decord
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
 from PIL import Image
 from torch.utils.data import Dataset
-from torchvision import transforms
 
-from . import gtransforms
+from .gtransforms import get_ten_crop_transforms
 
 DEFAULT_FEATURE_HUB = "jinmang2/ucf_crime_tencrop_i3d_seg32"
 DEFAULT_FILENAMES = {"train": "train.zip", "test": "test.zip"}
+
+
+class BridgeType(Enum):
+    PILLOW = "pillow"
+    PYTORCH = "torch"
+
+
+def is_decord_available():
+    return importlib.util.find_spec("decord") is not None
 
 
 def _build_feature_dataset(
@@ -138,54 +148,45 @@ class FeatureDataset(Dataset):
         return self.filenames[idx]
 
 
-class TenCropVideoFrameDataset(Dataset):
+class TencropVideoFrameDataset(Dataset):
     def __init__(
         self,
-        video_path_or_images: Union[str, List[Image.Image]],
-        frames_per_clip: int = 16,
-        resize: int = 256,
-        cropsize: int = 224,
-        resample: int = Image.BILINEAR,
+        video_path: Union[str, Path],
+        bridge_type: Union[str, BridgeType] = "pillow",
+        clip_length: int = 16,
+        **transform_kwargs,
     ):
-        if isinstance(video_path_or_images, str):
-            vr = decord.VideoReader(uri=video_path_or_images)
-            self.images = []
-            for i in range(len(vr)):
-                arr = vr[i].asnumpy()
-                self.images.append(Image.fromarray(arr))
-        elif isinstance(video_path_or_images, list) and isinstance(
-            video_path_or_images[0], Image.Image
-        ):
-            self.images = video_path_or_images
+        super().__init__()
+        if not isinstance(bridge_type, BridgeType):
+            bridge_type = BridgeType(bridge_type)
+        self.bridge_type = bridge_type
+
+        if is_decord_available():
+            import decord
+
+            bridge = "torch" if bridge_type == BridgeType.PYTORCH else "native"
+            decord.bridge.set_bridge(bridge)
         else:
-            raise ValueError(
-                "The type of `video_path_or_images` must be either `str` "
-                "or `List[PIL.Image.Image]`. "
-                f"The type of your input is {type(video_path_or_images)}."
-            )
+            raise ImportError("To support decoding videos, please install `decord`.")
 
-        self.frames_per_clip = frames_per_clip
-        n_frames = len(self.images)
-        self.indices = list(range((n_frames - 1) // frames_per_clip + 1))
+        self.video_reader = decord.VideoReader(uri=video_path)
+        self.n_frames = len(self.video_reader)
 
-        self.transform = transforms.Compose(
-            [
-                gtransforms.GroupResize(size=resize, resample=resample),
-                gtransforms.GroupTenCrop(size=cropsize),
-                gtransforms.ToTensorTenCrop(),
-                gtransforms.GroupStandardizationTenCrop(),
-                gtransforms.LoopPad(max_len=frames_per_clip),
-            ]
+        self.clip_length = clip_length
+        self.transform = get_ten_crop_transforms(
+            bridge_type=bridge_type.value,
+            clip_length=clip_length,
+            **transform_kwargs,
         )
 
     def __len__(self) -> int:
-        return len(self.indices)
+        return (self.n_frames - 1) // self.clip_length + 1
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        start_idx = idx * self.frames_per_clip
-        end_idx = (idx + 1) * self.frames_per_clip
-        image = self.images[start_idx:end_idx]
-        # (clip_len, ncrops, n_channel, heights, widths)
-        tensor = self.transform(image)
-        # (ncrops, clip_len, n_channel, heights, widths)
-        return tensor.permute(1, 0, 2, 3, 4)
+        start_idx, end_idx = idx * self.clip_length, (idx + 1) * self.clip_length
+        indices = range(start_idx, min(self.n_frames, end_idx))
+        clip = self.video_reader.get_batch(indices)
+        if self.bridge_type == BridgeType.PILLOW:
+            clip = list(map(Image.fromarray, clip.asnumpy()))
+        tensor = self.transform(clip)
+        return tensor
